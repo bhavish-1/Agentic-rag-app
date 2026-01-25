@@ -17,3 +17,6 @@ langchain-groq
 numpy
 torch
 transformers
+
+pdfminer.six
+unstructured

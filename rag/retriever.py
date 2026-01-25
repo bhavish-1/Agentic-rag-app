@@ -18,6 +18,8 @@ def get_retriever(
         persist_directory=persist_dir,
         embedding_function=embeddings
     )
+    if vectordb._collection.count() == 0:
+        raise ValueError("Vector DB is empty. Run ingestion first.")
 
     retriever = vectordb.as_retriever(
         search_kwargs={"k": k}

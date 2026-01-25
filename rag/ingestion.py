@@ -1,44 +1,42 @@
-from langchain_community.document_loaders import PyPDFLoader
+import os
+
+from langchain_community.document_loaders import UnstructuredPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import HuggingFaceEmbeddings
-import os
 
 
 def ingest_pdfs(
     pdf_dir: str,
     persist_dir: str = "data/chroma_db"
 ):
-    """
-    Load PDFs, split into chunks, embed, and store in ChromaDB.
-    """
-
-    # 1. Load all PDFs
     documents = []
+
     for file in os.listdir(pdf_dir):
-        if file.endswith(".pdf"):
-            loader = PyPDFLoader(
-                os.path.join(pdf_dir, file)
+        if file.lower().endswith(".pdf"):
+            loader = UnstructuredPDFLoader(
+                os.path.join(pdf_dir, file),
+                mode="elements"   # IMPORTANT
             )
             documents.extend(loader.load())
 
-    # 2. Split into chunks
+    if not documents:
+        raise ValueError("No documents loaded from PDFs.")
+
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
         chunk_overlap=200
     )
     chunks = splitter.split_documents(documents)
 
-    # 3. Create embeddings
     embeddings = HuggingFaceEmbeddings(
         model_name="sentence-transformers/all-MiniLM-L6-v2"
     )
 
-    # 4. Store in Chroma
     Chroma.from_documents(
         documents=chunks,
         embedding=embeddings,
         persist_directory=persist_dir
     )
 
-    print("✅ Ingestion completed. PDFs embedded and stored.")
+    print("✅ Ingestion completed successfully")
