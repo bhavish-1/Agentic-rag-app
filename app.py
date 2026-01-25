@@ -1,123 +1,64 @@
-import streamlit as st
-import os
-import numpy as np
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_chroma import Chroma
-from langchain_groq import ChatGroq
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.runnables.history import RunnableWithMessageHistory
-from langchain_core.chat_history import BaseChatMessageHistory
-from langchain_community.chat_message_histories import ChatMessageHistory
-from langchain.chains.combine_documents import create_stuff_documents_chain
-from langchain.chains.retrieval import create_retrieval_chain
-from langchain.chains.history_aware_retriever import create_history_aware_retriever
-
 from dotenv import load_dotenv
-
-os.environ["LANGCHAIN_TRACING_V2"] = "true"
-os.environ["LANGCHAIN_API_KEY"] = "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"
-
-
 load_dotenv()
-os.environ['HF_TOKEN'] = os.getenv("HF_TOKEN")
-embeddings = HuggingFaceEmbeddings(model_name='all-MiniLM-L6-v2')
 
-st.title('Conversational RAG With PDF Uploads, web link and youtube links to summarize ask doubts')
-st.write('Upload file links and ask questions')
+import streamlit as st
+from groq import Groq
 
-def get_session_history(session: str) -> BaseChatMessageHistory:
-            if session_id not in st.session_state.store:
-                st.session_state.store[session_id] = ChatMessageHistory()
-            return st.session_state.store[session_id]
+from agents.router_agent import route_question
+from tools.rag_tool import rag_answer
 
-api_key = st.text_input("Enter your Groq API Key", type="password")
 
-if api_key:
-    llm = ChatGroq(groq_api_key=api_key, model_name='Gemma2-9b-It')
-    session_id = st.text_input("Session_ID", value="default_session")
+# Initialize Groq client
+client = Groq()
 
-    if 'store' not in st.session_state:
-        st.session_state.store = {}
-    os.makedirs("uploads", exist_ok=True)
-    uploaded_files = st.file_uploader("Upload PDFs", type="pdf", accept_multiple_files=True)
-    documents = []
-    
-    if uploaded_files:
-        os.makedirs("uploads", exist_ok=True)
-        for uploaded_file in uploaded_files:
-            file_path = os.path.join("uploads", uploaded_file.name)
-            with open(file_path, "wb") as f:
-                f.write(uploaded_file.getvalue())
 
-            st.write(f"Saved: {file_path}")
+st.set_page_config(
+    page_title="Agentic RAG",
+    page_icon="🧠",
+    layout="centered"
+)
 
-            # Load the PDF using LangChain
-            loader = PyPDFLoader(file_path)
-            docs = loader.load()
-            documents.extend(docs)
+st.title("🧠 Agentic RAG Chatbot")
+st.write("Ask questions about your uploaded documents.")
 
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=5000, chunk_overlap=500)
-        text = text_splitter.split_documents(documents)
-        vector_store = Chroma.from_documents(documents=text, embedding=embeddings)
-        retriever = vector_store.as_retriever()
 
-        contextualize_q_system_prompt = (
-            "Given a chat history and the latest user question"
-            "which might reference context in the chat history."
-            "formulate a standalone question which can be understood"
-            "without the chat history. Do not answer the question,"
-            "just reformulate it if needed, otherwise return it as is."
-        )
+def direct_answer(question: str) -> str:
+    """
+    Answer directly using LLM (no retrieval).
+    """
+    response = client.chat.completions.create(
+        model="gemma2-9b-it",
+        messages=[
+            {"role": "user", "content": question}
+        ],
+        temperature=0.3
+    )
+    return response.choices[0].message.content.strip()
 
-        contextualize_q_prompt = ChatPromptTemplate.from_messages([
-            ("system", contextualize_q_system_prompt),
-            MessagesPlaceholder("chathistory"),
-            ("human", "{input}")
-        ])
 
-        history_aware_retriever = create_history_aware_retriever(llm, retriever, contextualize_q_prompt)
+# ---------------- UI ---------------- #
 
-        system_prompt = (
-            "You are a helpful assistant designed to answer questions based only on the retrieved context."
-            "Do not answer questions that are unrelated to the context or outside the information provided."
-            "If a question cannot be answered from the retrieved context, respond with I dont know."
-            "Never make up answers or provide guesses."
-            "Keep all responses clear, accurate, and no longer than 5 concise lines."
+user_question = st.text_input("Ask a question:")
 
-            "{context}"
-        )
+if user_question:
+    with st.spinner("Thinking..."):
+        # 1. Decide what to do
+        decision = route_question(user_question)
 
-        qa_prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", system_prompt),
-            MessagesPlaceholder("chathistory"),
-            ("human", "{input}")
-        ]
-        )
+        # Optional: show decision (great for demo/debug)
+        st.caption(f"🧭 Router decision: `{decision}`")
 
-        document_chain = create_stuff_documents_chain(llm, qa_prompt)
-        rag_chain = create_retrieval_chain(history_aware_retriever, document_chain)
+        # 2. Act based on decision
+        if decision == "direct_answer":
+            answer = direct_answer(user_question)
 
-        conversational_rag_chain = RunnableWithMessageHistory(
-            rag_chain,
-            get_session_history,
-            input_messages_key="input",
-            history_messages_key="chathistory",
-            output_messages_key="answer"
-        )
+        elif decision == "rag_search":
+            answer = rag_answer(user_question)
 
-        user_input = st.text_input("Ask a question")
-        if user_input:
-            session_history = get_session_history(session_id)
-            response = conversational_rag_chain.invoke(
-                {"input": user_input},
-                config={"configurable": {"session_id": session_id}},
-            )
-            st.write(st.session_state.store)
-            st.success(f"Assistant: {response['answer']}")
+        else:
+            # Safety fallback
+            answer = rag_answer(user_question)
 
-            st.write("Chat History:", session_history.messages)
-else:
-    st.warning("Please enter your Groq API Key")
+    # 3. Show final answer
+    st.markdown("### ✅ Answer")
+    st.write(answer)
